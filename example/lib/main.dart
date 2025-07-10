@@ -54,6 +54,15 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
   double minVisibility = 0.0;
   bool useLogNormalization = true;
   
+  // Clustering controls
+  double clusteringThreshold = 0.02;
+  bool enableClustering = true;
+  
+  // Zoom controls
+  double zoomLevel = 1.0;
+  Offset panOffset = Offset.zero;
+  bool isZooming = false;
+  
   // Key to force heatmap regeneration
   int _heatmapKey = 0;
 
@@ -103,6 +112,22 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
     });
   }
 
+  /// Calculate effective clustering threshold based on zoom level
+  double getEffectiveClusteringThreshold() {
+    if (!enableClustering) return 0.0;
+    
+    // Base threshold on viewport size - smaller viewports get more aggressive clustering
+    final baseArea = 800 * 600; // Reference viewport size
+    final currentArea = 800 * 600 / zoomLevel; // Approximate current viewport area
+    
+    // Adjust threshold based on viewport scale
+    final scaleFactor = math.sqrt(baseArea / currentArea).clamp(0.5, 2.0);
+    final dynamicThreshold = clusteringThreshold * scaleFactor;
+    
+    // Ensure minimum and maximum bounds
+    return dynamicThreshold.clamp(0.001, 0.2);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -138,16 +163,49 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                     return SizedBox(
                       width: constraints.maxWidth,
                       height: constraints.maxHeight,
-                      child: Stack(
-                        children: [
-                          // Background
-                          CustomPaint(
-                            size: Size(constraints.maxWidth, constraints.maxHeight),
-                            painter: BackgroundPainter(),
-                          ),
-                          // Heatmap Overlay
+                      child: GestureDetector(
+                        onScaleStart: (details) {
+                          setState(() {
+                            isZooming = true;
+                          });
+                        },
+                        onScaleUpdate: (details) {
+                          setState(() {
+                            // Update zoom level
+                            zoomLevel = (zoomLevel * details.scale).clamp(0.5, 5.0);
+                            
+                            // Update pan offset
+                            panOffset += details.focalPointDelta;
+                            
+                            // Constrain pan to keep content visible
+                            final maxOffsetX = (constraints.maxWidth * (zoomLevel - 1)) / 2;
+                            final maxOffsetY = (constraints.maxHeight * (zoomLevel - 1)) / 2;
+                            panOffset = Offset(
+                              panOffset.dx.clamp(-maxOffsetX, maxOffsetX),
+                              panOffset.dy.clamp(-maxOffsetY, maxOffsetY),
+                            );
+                          });
+                        },
+                        onScaleEnd: (details) {
+                          setState(() {
+                            isZooming = false;
+                          });
+                        },
+                        child: Transform(
+                          transform: Matrix4.identity()
+                            ..translate(panOffset.dx, panOffset.dy)
+                            ..scale(zoomLevel),
+                          alignment: Alignment.center,
+                          child: Stack(
+                            children: [
+                              // Background
+                              CustomPaint(
+                                size: Size(constraints.maxWidth, constraints.maxHeight),
+                                painter: BackgroundPainter(),
+                              ),
+                                                        // Heatmap Overlay
                           HeatmapOverlay(
-                            key: ValueKey(_heatmapKey),
+                            key: ValueKey('$_heatmapKey-$zoomLevel'),
                             imageProvider: const AssetImage('assets/sample.jpg'),
                             points: heatmapPoints,
                             blurRadius: blurRadius,
@@ -158,8 +216,52 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                             gamma: gamma,
                             minVisibility: minVisibility,
                             useLogNormalization: useLogNormalization,
+                            clusteringThreshold: clusteringThreshold,
+                            enableClustering: enableClustering,
                           ),
-                        ],
+                          // Zoom Indicator Overlay
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.7),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Zoom: ${zoomLevel.toStringAsFixed(2)}x',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  if (enableClustering)
+                                    Text(
+                                      'Clustering: ${getEffectiveClusteringThreshold().toStringAsFixed(3)}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                  Text(
+                                    'Points: ${heatmapPoints.length}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                            ],
+                          ),
+                        ),
                       ),
                     );
                   },
@@ -253,10 +355,10 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                         setState(() {
                           overallBlur = value;
                         });
-                      },
-                    ),
-                    Text('Value: ${overallBlur.toStringAsFixed(1)}'),
-                    const SizedBox(height: 16),
+                                              },
+                      ),
+                      Text('Value: ${overallBlur.toStringAsFixed(1)}'),
+                      const SizedBox(height: 16),
 
                     // Dynamic Range Controls
                     const Text('Dynamic Range Controls', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
@@ -309,6 +411,95 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                         ),
                         const Text('Use Log Normalization (Better for mixed intensities)'),
                       ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Clustering Controls
+                    const Text('Clustering Controls', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    
+                    // Enable Clustering Toggle
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: enableClustering,
+                          onChanged: (value) {
+                            setState(() {
+                              enableClustering = value ?? true;
+                            });
+                          },
+                        ),
+                        const Text('Enable Point Clustering (Performance optimization)'),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Clustering Threshold Control
+                    const Text('Clustering Threshold', style: TextStyle(fontWeight: FontWeight.w500)),
+                    Slider(
+                      value: clusteringThreshold,
+                      min: 0.001,
+                      max: 0.1,
+                      divisions: 99,
+                      label: clusteringThreshold.toStringAsFixed(3),
+                      onChanged: enableClustering ? (value) {
+                        setState(() {
+                          clusteringThreshold = value;
+                        });
+                      } : null,
+                    ),
+                    Text('Value: ${clusteringThreshold.toStringAsFixed(3)} (Distance for grouping points)'),
+                    const SizedBox(height: 16),
+
+                    // Zoom Controls
+                    const Text('Zoom Controls', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    
+                    // Zoom Instructions
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.blue[200]!),
+                      ),
+                      child: const Text(
+                        '💡 Pinch to zoom, drag to pan. Clustering adapts to zoom level automatically.',
+                        style: TextStyle(fontSize: 11, color: Colors.blue),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    
+                    // Zoom Level Control
+                    const Text('Zoom Level', style: TextStyle(fontWeight: FontWeight.w500)),
+                    Slider(
+                      value: zoomLevel,
+                      min: 0.2,
+                      max: 3.0,
+                      divisions: 45,
+                      label: zoomLevel.toStringAsFixed(2),
+                      onChanged: (value) {
+                        setState(() {
+                          zoomLevel = value;
+                          panOffset = Offset.zero; // Reset pan when zooming
+                        });
+                      },
+                    ),
+                    Text('Value: ${zoomLevel.toStringAsFixed(2)}x'),
+                    const SizedBox(height: 8),
+
+                    // Reset Zoom Button
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          zoomLevel = 1.0;
+                          panOffset = Offset.zero;
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange[100],
+                      ),
+                      child: const Text('Reset Zoom & Pan'),
                     ),
                     const SizedBox(height: 16),
 
@@ -413,6 +604,54 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                     ),
                     const SizedBox(height: 8),
 
+                    // Clustering Test Button
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          heatmapPoints.clear();
+                          // Create many closely spaced points to test clustering
+                          for (int i = 0; i < 50; i++) {
+                            heatmapPoints.add(HeatmapPoint(
+                              0.3 + (i * 0.005) % 0.4, // Very close points
+                              0.3 + (i * 0.007) % 0.4,
+                              20.0 + (i * 3) % 80, // Varying intensities
+                            ));
+                          }
+                          // Force heatmap regeneration
+                          _heatmapKey++;
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal[100],
+                      ),
+                      child: const Text('Test Clustering (50 Close Points)'),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Large Dataset for Zoom Test
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() {
+                          heatmapPoints.clear();
+                          // Create a large dataset to test zoom performance
+                          for (int i = 0; i < 200; i++) {
+                            heatmapPoints.add(HeatmapPoint(
+                              (i * 0.1) % 1.0, // Spread across the space
+                              (i * 0.15) % 1.0,
+                              10.0 + (i * 5) % 90, // Varying intensities
+                            ));
+                          }
+                          // Force heatmap regeneration
+                          _heatmapKey++;
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.indigo[100],
+                      ),
+                      child: const Text('Large Dataset (200 Points) - Test Zoom'),
+                    ),
+                    const SizedBox(height: 8),
+
                     // Random Points Button
                     Wrap(
                       children: [
@@ -490,6 +729,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                       ),
                       child: const Text('Test Normalization'),
                     ),
+                    const SizedBox(height: 30),
                   ],
                 ),
               ),

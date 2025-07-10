@@ -11,6 +11,14 @@ class HeatmapPoint {
   const HeatmapPoint(this.x, this.y, this.intensity);
 }
 
+class ClusteredPoint {
+  final double x;
+  final double y;
+  final double intensity;
+  final int pointCount;
+  const ClusteredPoint(this.x, this.y, this.intensity, this.pointCount);
+}
+
 class HeatmapOverlay extends StatefulWidget {
   final ImageProvider imageProvider;
   final List<HeatmapPoint> points; // List of HeatmapPoint (x, y, intensity)
@@ -22,6 +30,8 @@ class HeatmapOverlay extends StatefulWidget {
   final double gamma;
   final double minVisibility;
   final bool useLogNormalization;
+  final double clusteringThreshold; // Distance threshold for clustering (0.0 to 1.0)
+  final bool enableClustering; // Whether to enable point clustering
 
   const HeatmapOverlay({
     Key? key,
@@ -35,6 +45,8 @@ class HeatmapOverlay extends StatefulWidget {
     this.gamma = 0.5,
     this.minVisibility = 0.1,
     this.useLogNormalization = true,
+    this.clusteringThreshold = 0.02, // 2% of viewport size
+    this.enableClustering = true,
   }) : super(key: key);
 
   @override
@@ -100,7 +112,194 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     final points = widget.points.map((p) => '${p.x.toStringAsFixed(3)},${p.y.toStringAsFixed(3)}').join('|');
     final intensities = widget.points.map((p) => p.intensity.toString()).join(',');
     final sizeHash = currentSize != null ? '_${currentSize.width.toInt()}x${currentSize.height.toInt()}' : '';
-    return '${points}_${intensities}_${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}$sizeHash';
+    return '${points}_${intensities}_${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}_${widget.clusteringThreshold}_${widget.enableClustering}$sizeHash';
+  }
+
+  /// Clusters nearby points into single islands based on distance threshold
+  List<ClusteredPoint> _clusterPoints(List<HeatmapPoint> points, double threshold) {
+    if (points.isEmpty) return [];
+    
+    // For small datasets, use simple clustering
+    if (points.length <= 100) {
+      return _simpleClusterPoints(points, threshold);
+    }
+    
+    // For large datasets, use grid-based clustering for better performance
+    return _gridClusterPoints(points, threshold);
+  }
+  
+  /// Simple clustering algorithm for small datasets
+  List<ClusteredPoint> _simpleClusterPoints(List<HeatmapPoint> points, double threshold) {
+    final List<ClusteredPoint> clusters = [];
+    final List<bool> visited = List.filled(points.length, false);
+    
+    for (int i = 0; i < points.length; i++) {
+      if (visited[i]) continue;
+      
+      // Start a new cluster
+      final List<int> clusterIndices = [i];
+      visited[i] = true;
+      
+      // Find all points within threshold distance
+      bool foundNewPoint;
+      do {
+        foundNewPoint = false;
+        for (int j = 0; j < points.length; j++) {
+          if (visited[j]) continue;
+          
+          // Check if point j is within threshold of any point in current cluster
+          for (final clusterIndex in clusterIndices) {
+            final distance = _calculateDistance(points[j], points[clusterIndex]);
+            if (distance <= threshold) {
+              clusterIndices.add(j);
+              visited[j] = true;
+              foundNewPoint = true;
+              break;
+            }
+          }
+        }
+      } while (foundNewPoint);
+      
+      // Calculate cluster centroid and total intensity
+      double totalX = 0.0;
+      double totalY = 0.0;
+      double totalIntensity = 0.0;
+      
+      for (final index in clusterIndices) {
+        totalX += points[index].x;
+        totalY += points[index].y;
+        totalIntensity += points[index].intensity;
+      }
+      
+      final centroidX = totalX / clusterIndices.length;
+      final centroidY = totalY / clusterIndices.length;
+      
+      // Create clustered point with weighted intensity (can be adjusted based on cluster size)
+      final clusteredIntensity = totalIntensity * (1.0 + 0.1 * (clusterIndices.length - 1));
+      
+      clusters.add(ClusteredPoint(
+        centroidX,
+        centroidY,
+        clusteredIntensity,
+        clusterIndices.length,
+      ));
+    }
+    
+    return clusters;
+  }
+  
+  /// Grid-based clustering algorithm for large datasets (better performance)
+  List<ClusteredPoint> _gridClusterPoints(List<HeatmapPoint> points, double threshold) {
+    // Create a grid with cell size equal to threshold
+    final int gridSize = (1.0 / threshold).ceil();
+    final Map<String, List<int>> grid = {};
+    
+    // Assign points to grid cells
+    for (int i = 0; i < points.length; i++) {
+      final gridX = (points[i].x / threshold).floor();
+      final gridY = (points[i].y / threshold).floor();
+      final cellKey = '$gridX,$gridY';
+      
+      grid.putIfAbsent(cellKey, () => []).add(i);
+    }
+    
+    final List<ClusteredPoint> clusters = [];
+    final List<bool> visited = List.filled(points.length, false);
+    
+    // Process each grid cell
+    for (final cellPoints in grid.values) {
+      if (cellPoints.isEmpty) continue;
+      
+      // Find clusters within this cell and neighboring cells
+      final Set<String> processedCells = {};
+      
+      for (final pointIndex in cellPoints) {
+        if (visited[pointIndex]) continue;
+        
+        // Start a new cluster
+        final List<int> clusterIndices = [pointIndex];
+        visited[pointIndex] = true;
+        
+        // Find all points within threshold distance in this and neighboring cells
+        final int gridX = (points[pointIndex].x / threshold).floor();
+        final int gridY = (points[pointIndex].y / threshold).floor();
+        
+        // Check current cell and 8 neighboring cells
+        for (int dx = -1; dx <= 1; dx++) {
+          for (int dy = -1; dy <= 1; dy++) {
+            final neighborKey = '${gridX + dx},${gridY + dy}';
+            if (processedCells.contains(neighborKey)) continue;
+            processedCells.add(neighborKey);
+            
+            final neighborPoints = grid[neighborKey];
+            if (neighborPoints == null) continue;
+            
+            for (final neighborIndex in neighborPoints) {
+              if (visited[neighborIndex]) continue;
+              
+              // Check if point is within threshold of any point in current cluster
+              for (final clusterIndex in clusterIndices) {
+                final distance = _calculateDistance(points[neighborIndex], points[clusterIndex]);
+                if (distance <= threshold) {
+                  clusterIndices.add(neighborIndex);
+                  visited[neighborIndex] = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
+        // Calculate cluster centroid and total intensity
+        double totalX = 0.0;
+        double totalY = 0.0;
+        double totalIntensity = 0.0;
+        
+        for (final index in clusterIndices) {
+          totalX += points[index].x;
+          totalY += points[index].y;
+          totalIntensity += points[index].intensity;
+        }
+        
+        final centroidX = totalX / clusterIndices.length;
+        final centroidY = totalY / clusterIndices.length;
+        
+        // Create clustered point with weighted intensity
+        final clusteredIntensity = totalIntensity * (1.0 + 0.1 * (clusterIndices.length - 1));
+        
+        clusters.add(ClusteredPoint(
+          centroidX,
+          centroidY,
+          clusteredIntensity,
+          clusterIndices.length,
+        ));
+      }
+    }
+    
+    return clusters;
+  }
+  
+  /// Calculate Euclidean distance between two points (normalized coordinates)
+  double _calculateDistance(HeatmapPoint p1, HeatmapPoint p2) {
+    final dx = p1.x - p2.x;
+    final dy = p1.y - p2.y;
+    return math.sqrt(dx * dx + dy * dy);
+  }
+  
+  /// Get dynamic clustering threshold based on viewport scale
+  double _getDynamicClusteringThreshold(Size? currentSize) {
+    if (currentSize == null) return widget.clusteringThreshold;
+    
+    // Base threshold on viewport size - smaller viewports get more aggressive clustering
+    final viewportArea = currentSize.width * currentSize.height;
+    final baseArea = 800 * 600; // Reference viewport size
+    
+    // Adjust threshold based on viewport scale
+    final scaleFactor = math.sqrt(baseArea / viewportArea).clamp(0.5, 2.0);
+    final dynamicThreshold = widget.clusteringThreshold * scaleFactor;
+    
+    // Ensure minimum and maximum bounds
+    return dynamicThreshold.clamp(0.001, 0.2);
   }
 
   Future<ui.Image> _generateHeatmapImage([Size? currentSize]) async {
@@ -117,13 +316,24 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     print('Heatmap: Resolution: $resolution, Cell size: ~${(width/gridWidth).round()}x${(height/gridHeight).round()} pixels');
     print('Heatmap: Points count: ${widget.points.length}');
     
+    // Apply clustering if enabled with dynamic threshold adjustment
+    final dynamicThreshold = _getDynamicClusteringThreshold(currentSize);
+    final List<ClusteredPoint> clusteredPoints = widget.enableClustering 
+        ? _clusterPoints(widget.points, dynamicThreshold)
+        : widget.points.map((p) => ClusteredPoint(p.x, p.y, p.intensity, 1)).toList();
+    
+    print('Heatmap: Clustered points count: ${clusteredPoints.length}');
+    if (widget.enableClustering) {
+      print('Heatmap: Dynamic clustering threshold: ${dynamicThreshold.toStringAsFixed(4)} (base: ${widget.clusteringThreshold.toStringAsFixed(4)})');
+    }
+    
     // 1. Create density array at high resolution
     final densityArray = List.generate(
       gridHeight,
       (y) => List<double>.filled(gridWidth, 0.0),
     );
     
-    // 2. For each point, stamp a Gaussian kernel onto the density array (optimized)
+    // 2. For each clustered point, stamp a Gaussian kernel onto the density array (optimized)
     final kernelSigma = widget.blurSigma > 0 ? widget.blurSigma : 8.0;
     final kernelRadius = widget.blurRadius > 0 ? widget.blurRadius : 20.0;
     final int maxKernelSize = 101;
@@ -137,7 +347,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       (y) => List.generate(kernelSize, (x) => kernel[y][x] >= kernelThreshold),
     );
     
-    for (final point in widget.points) {
+    for (final point in clusteredPoints) {
       final normalizedX = point.x.clamp(0.0, 1.0);
       final normalizedY = point.y.clamp(0.0, 1.0);
       final gridX = (normalizedX * (gridWidth - 1)).round();
@@ -470,7 +680,9 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
         oldWidget.overallBlur != widget.overallBlur ||
         oldWidget.gamma != widget.gamma ||
         oldWidget.minVisibility != widget.minVisibility ||
-        oldWidget.useLogNormalization != widget.useLogNormalization) {
+        oldWidget.useLogNormalization != widget.useLogNormalization ||
+        oldWidget.clusteringThreshold != widget.clusteringThreshold ||
+        oldWidget.enableClustering != widget.enableClustering) {
       _generateHeatmap();
     }
   }
