@@ -276,10 +276,10 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
           final colorIndex = (density * 255).round().clamp(0, 255);
           final color = colorLUT[colorIndex];
           
-          bytes[byteIndex] = color.r.toInt();
-          bytes[byteIndex + 1] = color.g.toInt();
-          bytes[byteIndex + 2] = color.b.toInt();
-          bytes[byteIndex + 3] = color.a.toInt();
+          bytes[byteIndex] = color.red;
+          bytes[byteIndex + 1] = color.green;
+          bytes[byteIndex + 2] = color.blue;
+          bytes[byteIndex + 3] = color.alpha;
         }
         // else bytes remain 0 (transparent)
         
