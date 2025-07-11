@@ -15,14 +15,6 @@ class HeatmapPoint {
   const HeatmapPoint(this.x, this.y, this.intensity);
 }
 
-class ClusteredPoint {
-  final double x;
-  final double y;
-  final double intensity;
-  final int pointCount;
-  const ClusteredPoint(this.x, this.y, this.intensity, this.pointCount);
-}
-
 class HeatmapOverlay extends StatefulWidget {
   final ImageProvider imageProvider;
   final List<HeatmapPoint> points; // List of HeatmapPoint (x, y, intensity)
@@ -146,9 +138,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     print('Heatmap: Image size: ${width}x${height}, Grid size: ${gridWidth}x$gridHeight');
     print('Heatmap: Resolution: $resolution, Points count: ${widget.points.length}');
     
-    final List<ClusteredPoint> clusteredPoints = widget.points
-        .map((p) => ClusteredPoint(p.x, p.y, p.intensity, 1))
-        .toList();
+    final List<HeatmapPoint> points = widget.points;
     
     // Use flat array instead of nested lists
     final densityArray = Float32List(gridWidth * gridHeight);
@@ -164,13 +154,13 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     final halfKernel = kernelSize ~/ 2;
     
     // Optimized kernel application
-    for (final point in clusteredPoints) {
+    for (final point in points) {
       final normalizedX = point.x.clamp(0.0, 1.0);
       final normalizedY = point.y.clamp(0.0, 1.0);
       final gridX = (normalizedX * (gridWidth - 1)).round();
       final gridY = (normalizedY * (gridHeight - 1)).round();
       
-      // Bounds check
+      // Early bounds check: skip if kernel is fully outside grid
       if (gridX + halfKernel < 0 || gridX - halfKernel >= gridWidth ||
           gridY + halfKernel < 0 || gridY - halfKernel >= gridHeight) {
         continue;
