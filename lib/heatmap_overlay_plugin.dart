@@ -331,22 +331,22 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   }
 
   Color _jetColormap(double t) {
-  final alpha = (255 * widget.opacity).round();
-  
-  if (t < HeatmapConstants.jetQuarter) {
-    final s = t * HeatmapConstants.jetScale;
-    return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
-  } else if (t < HeatmapConstants.jetHalf) {
-    final s = (t - HeatmapConstants.jetQuarter) * HeatmapConstants.jetScale;
-    return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
-  } else if (t < HeatmapConstants.jetThreeQuarters) {
-    final s = (t - HeatmapConstants.jetHalf) * HeatmapConstants.jetScale;
-    return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
-  } else {
-    final s = (t - HeatmapConstants.jetThreeQuarters) * HeatmapConstants.jetScale;
-    return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
+    final alpha = (255 * widget.opacity).round();
+    
+    if (t < HeatmapConstants.jetQuarter) {
+      final s = t * HeatmapConstants.jetScale;
+      return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
+    } else if (t < HeatmapConstants.jetHalf) {
+      final s = (t - HeatmapConstants.jetQuarter) * HeatmapConstants.jetScale;
+      return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
+    } else if (t < HeatmapConstants.jetThreeQuarters) {
+      final s = (t - HeatmapConstants.jetHalf) * HeatmapConstants.jetScale;
+      return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
+    } else {
+      final s = (t - HeatmapConstants.jetThreeQuarters) * HeatmapConstants.jetScale;
+      return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
+    }
   }
-}
 
   Color _hotColormap(double t) {
     final alpha = (255 * widget.opacity).round();
@@ -361,6 +361,11 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       final s = (t - HeatmapConstants.hotTwoThirds) * HeatmapConstants.hotScale2;
       return Color.fromARGB(alpha, 255, 255, (255 * s).round());
     }
+  }
+
+  Color _coolColormap(double t) {
+    final alpha = (255 * widget.opacity).round();
+    return Color.fromARGB(alpha, (255 * t).round(), (255 * (1 - t)).round(), 255);
   }
 
   Color _viridisColormap(double t) {
