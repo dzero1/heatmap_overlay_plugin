@@ -248,31 +248,42 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   Future<ui.Image> _flatArrayToImage(Float32List array, int gridWidth, int gridHeight, int targetWidth, int targetHeight) async {
     final bytes = Uint8List(targetWidth * targetHeight * 4);
     
+    // Pre-calculate scaling factors
     final scaleX = gridWidth / targetWidth;
     final scaleY = gridHeight / targetHeight;
     
-    // Find max for visibility threshold
+    // Find max density for visibility threshold (vectorized)
     double maxDensity = 0.0;
     for (int i = 0; i < array.length; i++) {
       if (array[i] > maxDensity) maxDensity = array[i];
     }
     final minVisibleDensity = maxDensity > 0 ? maxDensity * 0.01 : 0.001;
     
+    // Pre-compute color lookup table for better performance
+    final colorLUT = _buildColorLUT(256);
+    
+    // Direct pixel manipulation with optimized loops
+    int byteIndex = 0;
     for (int y = 0; y < targetHeight; y++) {
+      final gridY = (y * scaleY).floor().clamp(0, gridHeight - 1);
+      final gridRowOffset = gridY * gridWidth;
+      
       for (int x = 0; x < targetWidth; x++) {
         final gridX = (x * scaleX).floor().clamp(0, gridWidth - 1);
-        final gridY = (y * scaleY).floor().clamp(0, gridHeight - 1);
-        
-        final density = array[gridY * gridWidth + gridX];
-        final index = (y * targetWidth + x) * 4;
+        final density = array[gridRowOffset + gridX];
         
         if (density > minVisibleDensity) {
-          final color = _getColorFromDensity(density);
-          bytes[index] = color.red;
-          bytes[index + 1] = color.green;
-          bytes[index + 2] = color.blue;
-          bytes[index + 3] = color.alpha;
+          final colorIndex = (density * 255).round().clamp(0, 255);
+          final color = colorLUT[colorIndex];
+          
+          bytes[byteIndex] = color.red;
+          bytes[byteIndex + 1] = color.green;
+          bytes[byteIndex + 2] = color.blue;
+          bytes[byteIndex + 3] = color.alpha;
         }
+        // else bytes remain 0 (transparent)
+        
+        byteIndex += 4;
       }
     }
     
@@ -281,6 +292,15 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     return completer.future;
   }
 
+  List<Color> _buildColorLUT(int size) {
+    final lut = List<Color>.filled(size, Colors.transparent);
+    for (int i = 0; i < size; i++) {
+      final t = i / (size - 1);
+      lut[i] = _getColorFromDensity(t);
+    }
+    return lut;
+  }
+  
   Color _getColorFromDensity(double density) {
     switch (widget.gradient) {
       case HeatmapGradient.jet:
@@ -295,104 +315,55 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   }
 
   Color _jetColormap(double t) {
-    // Jet colormap: blue -> cyan -> green -> yellow -> red
+    final alpha = (255 * widget.opacity).round();
+    
     if (t < 0.25) {
-      final s = t / 0.25;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(), // Apply opacity to alpha
-        0,
-        0,
-        (255 * (0.5 + 0.5 * s)).round(),
-      );
+      final s = t * 4.0; // Avoid division
+      return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
     } else if (t < 0.5) {
-      final s = (t - 0.25) / 0.25;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        0,
-        (255 * s).round(),
-        255,
-      );
+      final s = (t - 0.25) * 4.0;
+      return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
     } else if (t < 0.75) {
-      final s = (t - 0.5) / 0.25;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        (255 * s).round(),
-        255,
-        (255 * (1 - s)).round(),
-      );
+      final s = (t - 0.5) * 4.0;
+      return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
     } else {
-      final s = (t - 0.75) / 0.25;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        255,
-        (255 * (1 - s)).round(),
-        0,
-      );
-
-      // Color.fromARGB(255, 180, 0, 0);
+      final s = (t - 0.75) * 4.0;
+      return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
     }
   }
 
   Color _hotColormap(double t) {
-    // Hot colormap: black -> red -> yellow -> white
+    final alpha = (255 * widget.opacity).round();
+    
     if (t < 0.33) {
-      final s = t / 0.33;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        (255 * s).round(),
-        0,
-        0,
-      );
+      final s = t * 3.030303; // Pre-calculated 1/0.33
+      return Color.fromARGB(alpha, (255 * s).round(), 0, 0);
     } else if (t < 0.66) {
-      final s = (t - 0.33) / 0.33;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        255,
-        (255 * s).round(),
-        0,
-      );
+      final s = (t - 0.33) * 3.030303;
+      return Color.fromARGB(alpha, 255, (255 * s).round(), 0);
     } else {
-      final s = (t - 0.66) / 0.34;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        255,
-        255,
-        (255 * s).round(),
-      );
+      final s = (t - 0.66) * 2.941176; // Pre-calculated 1/0.34
+      return Color.fromARGB(alpha, 255, 255, (255 * s).round());
     }
   }
 
   Color _coolColormap(double t) {
-    // Cool colormap: cyan -> magenta
-    return Color.fromARGB(
-      (255 * widget.opacity).round(),
-      (255 * t).round(),
-      (255 * (1 - t)).round(),
-      255,
-    );
+    final alpha = (255 * widget.opacity).round();
+    return Color.fromARGB(alpha, (255 * t).round(), (255 * (1 - t)).round(), 255);
   }
 
   Color _viridisColormap(double t) {
-    // Simplified viridis colormap
+    final alpha = (255 * widget.opacity).round();
+    
     if (t < 0.5) {
-      final s = t / 0.5;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        0,
-        (100 + 155 * s).round(),
-        (200 + 55 * s).round(),
-      );
+      final s = t * 2.0; // Avoid division
+      return Color.fromARGB(alpha, 0, (100 + 155 * s).round(), (200 + 55 * s).round());
     } else {
-      final s = (t - 0.5) / 0.5;
-      return Color.fromARGB(
-        (255 * widget.opacity).round(),
-        (200 * s).round(),
-        (255 - 100 * s).round(),
-        (255 - 200 * s).round(),
-      );
+      final s = (t - 0.5) * 2.0;
+      return Color.fromARGB(alpha, (200 * s).round(), (255 - 100 * s).round(), (255 - 200 * s).round());
     }
   }
-
+  
   @override
   Widget build(BuildContext context) {
     if (_image == null) {
@@ -489,7 +460,10 @@ class HeatmapPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant HeatmapPainter oldDelegate) {
+    return oldDelegate.heatmapImage != heatmapImage || 
+          oldDelegate.opacity != opacity;
+  }
 }
 
 enum HeatmapGradient {
