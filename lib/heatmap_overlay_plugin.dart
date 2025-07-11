@@ -1,4 +1,3 @@
-
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,7 +5,6 @@ import 'package:heatmap_overlay_plugin/utils.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 class HeatmapConstants {
   static const double defaultKernelSigma = 8.0;
@@ -18,7 +16,7 @@ class HeatmapConstants {
   static const int colorLutSize = 256;
   static const Duration debounceDelay = Duration(milliseconds: 100);
   static const double sizeChangeThreshold = 1.0;
-  
+
   // Colormap constants
   static const double jetQuarter = 0.25;
   static const double jetHalf = 0.5;
@@ -26,7 +24,7 @@ class HeatmapConstants {
   static const double hotThird = 0.33;
   static const double hotTwoThirds = 0.66;
   static const double viridisHalf = 0.5;
-  
+
   // Pre-calculated multipliers
   static const double jetScale = 4.0;
   static const double hotScale1 = 3.030303; // 1/0.33
@@ -52,7 +50,8 @@ class HeatmapOverlay extends StatefulWidget {
   final double gamma;
   final double minVisibility;
   final bool useLogNormalization;
-  final double resolution; // Grid resolution for heatmap quality (lower = higher quality)
+  final double
+      resolution; // Grid resolution for heatmap quality (lower = higher quality)
 
   const HeatmapOverlay({
     super.key,
@@ -119,18 +118,21 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
 
   void _generateHeatmap([Size? currentSize]) {
     if (_image == null || widget.points.isEmpty) return;
-    
+
     // Check if size has changed significantly
     if (currentSize != null && _lastSize != null) {
-      final sizeDiff = (currentSize.width - _lastSize!.width).abs() + 
-                      (currentSize.height - _lastSize!.height).abs();
-      if (sizeDiff < HeatmapConstants.sizeChangeThreshold) return; // Size hasn't changed significantly
+      final sizeDiff = (currentSize.width - _lastSize!.width).abs() +
+          (currentSize.height - _lastSize!.height).abs();
+      if (sizeDiff < HeatmapConstants.sizeChangeThreshold)
+        return; // Size hasn't changed significantly
     }
-    
+
     // Create a hash of current parameters to check if we need to regenerate
     final currentHash = _createParameterHash(currentSize);
-    if (currentHash == _lastHash && _heatmapImage != null && currentSize == null) return;
-    
+    if (currentHash == _lastHash &&
+        _heatmapImage != null &&
+        currentSize == null) return;
+
     // Debounce rapid changes
     _debounceTimer?.cancel();
     _debounceTimer = Timer(HeatmapConstants.debounceDelay, () {
@@ -147,89 +149,187 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   }
 
   String _createParameterHash([Size? currentSize]) {
-    final points = widget.points.map((p) => '${p.x.toStringAsFixed(3)},${p.y.toStringAsFixed(3)}').join('|');
-    final intensities = widget.points.map((p) => p.intensity.toString()).join(',');
-    final sizeHash = currentSize != null ? '_${currentSize.width.toInt()}x${currentSize.height.toInt()}' : '';
-    return '${points}_${intensities}_${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}_${widget.resolution}$sizeHash';
+    final pointsHash = _createPointsHash(widget.points);
+    final intensitiesHash = _createIntensitiesHash(widget.points);
+    final sizeHash = _createSizeHash(currentSize);
+    final parametersHash = _createParametersHash();
+
+    return '${pointsHash}_${intensitiesHash}_${parametersHash}$sizeHash';
   }
-  
-  Future<ui.Image> _generateHeatmapImage([Size? currentSize]) async {
-    final width = currentSize?.width.toInt() ?? _image!.width;
-    final height = currentSize?.height.toInt() ?? _image!.height;
-    
-    final double resolution = widget.resolution;
-    final int gridWidth = (width / resolution).round();
-    final int gridHeight = (height / resolution).round();
-    
-    print('Heatmap: Image size: ${width}x${height}, Grid size: ${gridWidth}x$gridHeight');
-    print('Heatmap: Resolution: $resolution, Points count: ${widget.points.length}');
-    
-    final List<HeatmapPoint> points = widget.points;
-    
-    // Use flat array instead of nested lists
-    final densityArray = Float32List(gridWidth * gridHeight);
-    
-    // Optimized kernel stamping
-    final kernelSigma = widget.blurSigma > 0 ? widget.blurSigma : HeatmapConstants.defaultKernelSigma;
-    final kernelRadius = widget.blurRadius > 0 ? widget.blurRadius : HeatmapConstants.defaultKernelRadius;
-    final kernelSize = math.min((kernelRadius * 2 + 1).round(), HeatmapConstants.maxKernelSize);
-    
-    final kernel = KernelCache.getFlatKernel(kernelSize, kernelSigma, kernelRadius);
-    final kernelMask = KernelCache.getKernelMask(kernelSize, kernelSigma, kernelRadius, HeatmapConstants.kernelThreshold);
-    final halfKernel = kernelSize ~/ 2;
-    
-    // Optimized kernel application
-    for (final point in points) {
-      final normalizedX = point.x.clamp(0.0, 1.0);
-      final normalizedY = point.y.clamp(0.0, 1.0);
-      final gridX = (normalizedX * (gridWidth - 1)).round();
-      final gridY = (normalizedY * (gridHeight - 1)).round();
-      
-      // Early bounds check: skip if kernel is fully outside grid
-      if (gridX + halfKernel < 0 || gridX - halfKernel >= gridWidth ||
-          gridY + halfKernel < 0 || gridY - halfKernel >= gridHeight) {
-        continue;
-      }
-      
-      // Optimized stamping with flat array
-      final startY = math.max(0, gridY - halfKernel);
-      final endY = math.min(gridHeight, gridY + halfKernel + 1);
-      final startX = math.max(0, gridX - halfKernel);
-      final endX = math.min(gridWidth, gridX + halfKernel + 1);
-      
-      for (int y = startY; y < endY; y++) {
-        final kyOffset = (y - gridY + halfKernel) * kernelSize;
-        final densityOffset = y * gridWidth;
-        
-        for (int x = startX; x < endX; x++) {
-          final kIndex = kyOffset + (x - gridX + halfKernel);
-          final dIndex = densityOffset + x;
-          
-          if (kIndex >= 0 && kIndex < kernel.length && 
-              kernelMask[kIndex ~/ kernelSize][kIndex % kernelSize]) {
-            densityArray[dIndex] += kernel[kIndex] * point.intensity;
-          }
+
+  String _createPointsHash(List<HeatmapPoint> points) {
+    return points
+        .map((point) =>
+            '${point.x.toStringAsFixed(3)},${point.y.toStringAsFixed(3)}')
+        .join('|');
+  }
+
+  String _createIntensitiesHash(List<HeatmapPoint> points) {
+    return points.map((point) => point.intensity.toString()).join(',');
+  }
+
+  String _createSizeHash(Size? size) {
+    return size != null ? '_${size.width.toInt()}x${size.height.toInt()}' : '';
+  }
+
+  String _createParametersHash() {
+    return '${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}_${widget.resolution}';
+  }
+
+  double _calculateKernelSigma() {
+    return widget.blurSigma > 0
+        ? widget.blurSigma
+        : HeatmapConstants.defaultKernelSigma;
+  }
+
+  double _calculateKernelRadius() {
+    return widget.blurRadius > 0
+        ? widget.blurRadius
+        : HeatmapConstants.defaultKernelRadius;
+  }
+
+  int _calculateKernelSize(double kernelRadius) {
+    return math.min(
+        (kernelRadius * 2 + 1).round(), HeatmapConstants.maxKernelSize);
+  }
+
+  (int, int) _normalizePointToGrid(
+      HeatmapPoint point, int gridWidth, int gridHeight) {
+    final normalizedX = point.x.clamp(0.0, 1.0);
+    final normalizedY = point.y.clamp(0.0, 1.0);
+    final gridX = (normalizedX * (gridWidth - 1)).round();
+    final gridY = (normalizedY * (gridHeight - 1)).round();
+    return (gridX, gridY);
+  }
+
+  bool _isKernelOutOfBounds(
+      int centerX, int centerY, int halfKernel, int gridWidth, int gridHeight) {
+    return centerX + halfKernel < 0 ||
+        centerX - halfKernel >= gridWidth ||
+        centerY + halfKernel < 0 ||
+        centerY - halfKernel >= gridHeight;
+  }
+
+  ({int startX, int endX, int startY, int endY}) _calculateKernelBounds(
+      int centerX, int centerY, int halfKernel, int gridWidth, int gridHeight) {
+    return (
+      startX: math.max(0, centerX - halfKernel),
+      endX: math.min(gridWidth, centerX + halfKernel + 1),
+      startY: math.max(0, centerY - halfKernel),
+      endY: math.min(gridHeight, centerY + halfKernel + 1),
+    );
+  }
+
+  void _applyKernelToGrid(
+    Float32List densityArray,
+    Float32List kernel,
+    List<List<bool>> kernelMask,
+    ({int startX, int endX, int startY, int endY}) bounds,
+    int centerX,
+    int centerY,
+    int halfKernel,
+    int kernelSize,
+    int gridWidth,
+    double intensity,
+  ) {
+    for (int gridY = bounds.startY; gridY < bounds.endY; gridY++) {
+      final kernelRowOffset = (gridY - centerY + halfKernel) * kernelSize;
+      final densityRowOffset = gridY * gridWidth;
+
+      for (int gridX = bounds.startX; gridX < bounds.endX; gridX++) {
+        final kernelIndex = kernelRowOffset + (gridX - centerX + halfKernel);
+        final densityIndex = densityRowOffset + gridX;
+
+        if (_isValidKernelApplication(
+            kernelIndex, kernel.length, kernelSize, kernelMask)) {
+          densityArray[densityIndex] += kernel[kernelIndex] * intensity;
         }
       }
     }
-    
+  }
+
+  bool _isValidKernelApplication(int kernelIndex, int kernelLength,
+      int kernelSize, List<List<bool>> kernelMask) {
+    return kernelIndex >= 0 &&
+        kernelIndex < kernelLength &&
+        kernelMask[kernelIndex ~/ kernelSize][kernelIndex % kernelSize];
+  }
+
+  Future<ui.Image> _generateHeatmapImage([Size? currentSize]) async {
+    final imageWidth = currentSize?.width.toInt() ?? _image!.width;
+    final imageHeight = currentSize?.height.toInt() ?? _image!.height;
+
+    final double gridResolution = widget.resolution;
+    final int heatmapGridWidth = (imageWidth / gridResolution).round();
+    final int heatmapGridHeight = (imageHeight / gridResolution).round();
+
+    print(
+        'Heatmap: Image size: ${imageWidth}x${imageHeight}, Grid size: ${heatmapGridWidth}x$heatmapGridHeight');
+    print(
+        'Heatmap: Resolution: $gridResolution, Points count: ${widget.points.length}');
+
+    final List<HeatmapPoint> points = widget.points;
+
+    // Use flat array instead of nested lists
+    final densityArray = Float32List(heatmapGridWidth * heatmapGridHeight);
+
+    // Optimized kernel stamping
+    final kernelSigma = _calculateKernelSigma();
+    final kernelRadius = _calculateKernelRadius();
+    final kernelSize = _calculateKernelSize(kernelRadius);
+
+    final kernel =
+        KernelCache.getFlatKernel(kernelSize, kernelSigma, kernelRadius);
+    final kernelMask = KernelCache.getKernelMask(kernelSize, kernelSigma,
+        kernelRadius, HeatmapConstants.kernelThreshold);
+    final halfKernel = kernelSize ~/ 2;
+
+    // Optimized kernel application
+    for (final point in points) {
+      final (pointGridX, pointGridY) =
+          _normalizePointToGrid(point, heatmapGridWidth, heatmapGridHeight);
+
+      // Early bounds check: skip if kernel is fully outside grid
+      if (_isKernelOutOfBounds(pointGridX, pointGridY, halfKernel,
+          heatmapGridWidth, heatmapGridHeight)) {
+        continue;
+      }
+
+      // Calculate kernel application bounds
+      final kernelBounds = _calculateKernelBounds(pointGridX, pointGridY,
+          halfKernel, heatmapGridWidth, heatmapGridHeight);
+
+      _applyKernelToGrid(
+          densityArray,
+          kernel,
+          kernelMask,
+          kernelBounds,
+          pointGridX,
+          pointGridY,
+          halfKernel,
+          kernelSize,
+          heatmapGridWidth,
+          point.intensity);
+    }
+
     // Find max value efficiently
     double maxValue = 0.0;
     for (int i = 0; i < densityArray.length; i++) {
       if (densityArray[i] > maxValue) maxValue = densityArray[i];
     }
-    
+
     // Normalize array in place
     _normalizeFlatArray(densityArray, maxValue);
-    
+
     print('Heatmap: Max value: ${maxValue.toStringAsFixed(2)}');
-    
-    return _flatArrayToImage(densityArray, gridWidth, gridHeight, width, height);
+
+    return _flatArrayToImage(densityArray, heatmapGridWidth, heatmapGridHeight,
+        imageWidth, imageHeight);
   }
 
   void _normalizeFlatArray(Float32List array, double maxValue) {
     if (maxValue <= 0.0) return;
-    
+
     // Find minimum non-zero value
     double minNonZeroValue = maxValue;
     for (int i = 0; i < array.length; i++) {
@@ -238,12 +338,12 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
         minNonZeroValue = value;
       }
     }
-    
+
     // Normalize in place
     for (int i = 0; i < array.length; i++) {
       final value = array[i];
       if (value <= 0.0) continue;
-      
+
       double normalized;
       if (widget.useLogNormalization) {
         final logMax = math.log(maxValue + 1.0);
@@ -254,58 +354,71 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       } else {
         normalized = value / maxValue;
       }
-      
+
       final gammaCorrected = math.pow(normalized, widget.gamma).toDouble();
       array[i] = math.max(gammaCorrected, widget.minVisibility);
     }
   }
 
-  Future<ui.Image> _flatArrayToImage(Float32List array, int gridWidth, int gridHeight, int targetWidth, int targetHeight) async {
+  Future<ui.Image> _flatArrayToImage(Float32List array, int gridWidth,
+      int gridHeight, int targetWidth, int targetHeight) async {
     final bytes = Uint8List(targetWidth * targetHeight * 4);
-    
+
     // Pre-calculate scaling factors
     final scaleX = gridWidth / targetWidth;
     final scaleY = gridHeight / targetHeight;
-    
+
     // Find max density for visibility threshold (vectorized)
     double maxDensity = 0.0;
     for (int i = 0; i < array.length; i++) {
       if (array[i] > maxDensity) maxDensity = array[i];
     }
-    final minVisibleDensity = maxDensity > 0 ? maxDensity * HeatmapConstants.minVisibleDensityRatio : 
-    HeatmapConstants.minVisibleDensityFallback;
-    
+    final minVisibleDensity = maxDensity > 0
+        ? maxDensity * HeatmapConstants.minVisibleDensityRatio
+        : HeatmapConstants.minVisibleDensityFallback;
+
     // Pre-compute color lookup table for better performance
     final colorLUT = _buildColorLUT(HeatmapConstants.colorLutSize);
-    
+
     // Direct pixel manipulation with optimized loops
-    int byteIndex = 0;
-    for (int y = 0; y < targetHeight; y++) {
-      final gridY = (y * scaleY).floor().clamp(0, gridHeight - 1);
+    int pixelByteIndex = 0;
+    for (int imageY = 0; imageY < targetHeight; imageY++) {
+      final gridY = (imageY * scaleY).floor().clamp(0, gridHeight - 1);
       final gridRowOffset = gridY * gridWidth;
-      
-      for (int x = 0; x < targetWidth; x++) {
-        final gridX = (x * scaleX).floor().clamp(0, gridWidth - 1);
-        final density = array[gridRowOffset + gridX];
-        
-        if (density > minVisibleDensity) {
-          final colorIndex = (density * 255).round().clamp(0, 255);
-          final color = colorLUT[colorIndex];
-          
-          bytes[byteIndex] = color.red;
-          bytes[byteIndex + 1] = color.green;
-          bytes[byteIndex + 2] = color.blue;
-          bytes[byteIndex + 3] = color.alpha;
-        }
-        // else bytes remain 0 (transparent)
-        
-        byteIndex += 4;
+
+      for (int imageX = 0; imageX < targetWidth; imageX++) {
+        final correspondingGridX =
+            (imageX * scaleX).floor().clamp(0, gridWidth - 1);
+        final pixelDensity = array[gridRowOffset + correspondingGridX];
+
+        _setPixelColor(
+            bytes, pixelByteIndex, pixelDensity, minVisibleDensity, colorLUT);
+
+        pixelByteIndex += 4;
       }
     }
-    
+
     final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(bytes, targetWidth, targetHeight, ui.PixelFormat.rgba8888, completer.complete);
+    ui.decodeImageFromPixels(bytes, targetWidth, targetHeight,
+        ui.PixelFormat.rgba8888, completer.complete);
     return completer.future;
+  }
+
+  void _setPixelColor(Uint8List bytes, int byteIndex, double density,
+      double minVisibleDensity, List<Color> colorLUT) {
+    if (density > minVisibleDensity) {
+      final colorIntensityIndex =
+          (density * (HeatmapConstants.colorLutSize - 1))
+              .round()
+              .clamp(0, HeatmapConstants.colorLutSize - 1);
+      final pixelColor = colorLUT[colorIntensityIndex];
+
+      bytes[byteIndex] = pixelColor.red;
+      bytes[byteIndex + 1] = pixelColor.green;
+      bytes[byteIndex + 2] = pixelColor.blue;
+      bytes[byteIndex + 3] = pixelColor.alpha;
+    }
+    // else bytes remain 0 (transparent) - no need to set explicitly
   }
 
   List<Color> _buildColorLUT(int size) {
@@ -316,7 +429,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     }
     return lut;
   }
-  
+
   Color _getColorFromDensity(double density) {
     switch (widget.gradient) {
       case HeatmapGradient.jet:
@@ -332,7 +445,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
 
   Color _jetColormap(double t) {
     final alpha = (255 * widget.opacity).round();
-    
+
     if (t < HeatmapConstants.jetQuarter) {
       final s = t * HeatmapConstants.jetScale;
       return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
@@ -341,16 +454,18 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
     } else if (t < HeatmapConstants.jetThreeQuarters) {
       final s = (t - HeatmapConstants.jetHalf) * HeatmapConstants.jetScale;
-      return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
+      return Color.fromARGB(
+          alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
     } else {
-      final s = (t - HeatmapConstants.jetThreeQuarters) * HeatmapConstants.jetScale;
+      final s =
+          (t - HeatmapConstants.jetThreeQuarters) * HeatmapConstants.jetScale;
       return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
     }
   }
 
   Color _hotColormap(double t) {
     final alpha = (255 * widget.opacity).round();
-    
+
     if (t < HeatmapConstants.hotThird) {
       final s = t * HeatmapConstants.hotScale1;
       return Color.fromARGB(alpha, (255 * s).round(), 0, 0);
@@ -358,25 +473,30 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       final s = (t - HeatmapConstants.hotThird) * HeatmapConstants.hotScale1;
       return Color.fromARGB(alpha, 255, (255 * s).round(), 0);
     } else {
-      final s = (t - HeatmapConstants.hotTwoThirds) * HeatmapConstants.hotScale2;
+      final s =
+          (t - HeatmapConstants.hotTwoThirds) * HeatmapConstants.hotScale2;
       return Color.fromARGB(alpha, 255, 255, (255 * s).round());
     }
   }
 
   Color _coolColormap(double t) {
     final alpha = (255 * widget.opacity).round();
-    return Color.fromARGB(alpha, (255 * t).round(), (255 * (1 - t)).round(), 255);
+    return Color.fromARGB(
+        alpha, (255 * t).round(), (255 * (1 - t)).round(), 255);
   }
 
   Color _viridisColormap(double t) {
     final alpha = (255 * widget.opacity).round();
-    
+
     if (t < HeatmapConstants.viridisHalf) {
       final s = t * HeatmapConstants.viridisScale;
-      return Color.fromARGB(alpha, 0, (100 + 155 * s).round(), (200 + 55 * s).round());
+      return Color.fromARGB(
+          alpha, 0, (100 + 155 * s).round(), (200 + 55 * s).round());
     } else {
-      final s = (t - HeatmapConstants.viridisHalf) * HeatmapConstants.viridisScale;
-      return Color.fromARGB(alpha, (200 * s).round(), (255 - 100 * s).round(), (255 - 200 * s).round());
+      final s =
+          (t - HeatmapConstants.viridisHalf) * HeatmapConstants.viridisScale;
+      return Color.fromARGB(alpha, (200 * s).round(), (255 - 100 * s).round(),
+          (255 - 200 * s).round());
     }
   }
 
@@ -385,22 +505,25 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     if (_image == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final currentSize = Size(constraints.maxWidth, constraints.maxHeight);
-        
+
         // Generate heatmap on first build or size change
-        if (_heatmapImage == null || _lastSize == null || 
-            (currentSize.width - _lastSize!.width).abs() > HeatmapConstants.sizeChangeThreshold ||
-            (currentSize.height - _lastSize!.height).abs() > HeatmapConstants.sizeChangeThreshold) {
+        if (_heatmapImage == null ||
+            _lastSize == null ||
+            (currentSize.width - _lastSize!.width).abs() >
+                HeatmapConstants.sizeChangeThreshold ||
+            (currentSize.height - _lastSize!.height).abs() >
+                HeatmapConstants.sizeChangeThreshold) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _image != null) {
               _generateHeatmap(currentSize);
             }
           });
         }
-        
+
         return SizedBox(
           width: currentSize.width,
           height: currentSize.height,
@@ -477,14 +600,14 @@ class HeatmapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant HeatmapPainter oldDelegate) {
-    return oldDelegate.heatmapImage != heatmapImage || 
-          oldDelegate.opacity != opacity;
+    return oldDelegate.heatmapImage != heatmapImage ||
+        oldDelegate.opacity != opacity;
   }
 }
 
 enum HeatmapGradient {
-  jet,     // Blue -> Cyan -> Green -> Yellow -> Red
-  hot,     // Black -> Red -> Yellow -> White
-  cool,    // Cyan -> Magenta
+  jet, // Blue -> Cyan -> Green -> Yellow -> Red
+  hot, // Black -> Red -> Yellow -> White
+  cool, // Cyan -> Magenta
   viridis, // Purple -> Blue -> Green -> Yellow
 }
