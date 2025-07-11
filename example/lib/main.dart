@@ -46,7 +46,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
   double blurRadius = 20.0;
   double blurSigma = 6.5;
   double overallBlur = 0.0;
-  double blurSigmaY = 0.0;
+  double resolution = 1.0; // Grid resolution (lower = higher quality)
   HeatmapGradient selectedGradient = HeatmapGradient.jet;
   
   // Dynamic range controls
@@ -54,9 +54,6 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
   double minVisibility = 0.0;
   bool useLogNormalization = true;
   
-  // Clustering controls
-  double clusteringThreshold = 0.02;
-  bool enableClustering = true;
   
   // Zoom controls
   double zoomLevel = 1.0;
@@ -112,21 +109,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
     });
   }
 
-  /// Calculate effective clustering threshold based on zoom level
-  double getEffectiveClusteringThreshold() {
-    if (!enableClustering) return 0.0;
-    
-    // Base threshold on viewport size - smaller viewports get more aggressive clustering
-    final baseArea = 800 * 600; // Reference viewport size
-    final currentArea = 800 * 600 / zoomLevel; // Approximate current viewport area
-    
-    // Adjust threshold based on viewport scale
-    final scaleFactor = math.sqrt(baseArea / currentArea).clamp(0.5, 2.0);
-    final dynamicThreshold = clusteringThreshold * scaleFactor;
-    
-    // Ensure minimum and maximum bounds
-    return dynamicThreshold.clamp(0.001, 0.2);
-  }
+
 
   @override
   void initState() {
@@ -205,7 +188,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                               ),
                                                         // Heatmap Overlay
                           HeatmapOverlay(
-                            key: ValueKey('$_heatmapKey-$zoomLevel'),
+                            key: ValueKey('$_heatmapKey-$zoomLevel-$resolution'),
                             imageProvider: const AssetImage('assets/sample.jpg'),
                             points: heatmapPoints,
                             blurRadius: blurRadius,
@@ -216,8 +199,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                             gamma: gamma,
                             minVisibility: minVisibility,
                             useLogNormalization: useLogNormalization,
-                            clusteringThreshold: clusteringThreshold,
-                            enableClustering: enableClustering,
+                            resolution: resolution, // Grid resolution control
                           ),
                           // Zoom Indicator Overlay
                           Positioned(
@@ -240,14 +222,6 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  if (enableClustering)
-                                    Text(
-                                      'Clustering: ${getEffectiveClusteringThreshold().toStringAsFixed(3)}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                      ),
-                                    ),
                                   Text(
                                     'Points: ${heatmapPoints.length}',
                                     style: const TextStyle(
@@ -315,7 +289,8 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                     Slider(
                       value: blurRadius,
                       min: 1.0,
-                      max: 40.0,
+                      max: 100.0,
+                      divisions: 20,
                       label: blurRadius.toStringAsFixed(0),
                       onChanged: (value) {
                         setState(() {
@@ -331,7 +306,7 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                     Slider(
                       value: blurSigma,
                       min: 0.0,
-                      max: 10.0,
+                      max: 30.0,
                       divisions: 20,
                       label: blurSigma.toStringAsFixed(1),
                       onChanged: (value) {
@@ -357,8 +332,25 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                         });
                                               },
                       ),
-                      Text('Value: ${overallBlur.toStringAsFixed(1)}'),
-                      const SizedBox(height: 16),
+                                          Text('Value: ${overallBlur.toStringAsFixed(1)}'),
+                    const SizedBox(height: 16),
+
+                    // Resolution Control
+                    const Text('Resolution (Quality)', style: TextStyle(fontWeight: FontWeight.w500)),
+                    Slider(
+                      value: resolution,
+                      min: 1.0,
+                      max: 8.0,
+                      divisions: 14,
+                      label: resolution.toStringAsFixed(1),
+                      onChanged: (value) {
+                        setState(() {
+                          resolution = value;
+                        });
+                      },
+                    ),
+                    Text('Value: ${resolution.toStringAsFixed(1)} (Lower = Higher Quality)'),
+                    const SizedBox(height: 16),
 
                     // Dynamic Range Controls
                     const Text('Dynamic Range Controls', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
@@ -412,43 +404,6 @@ class _HeatmapExamplePageState extends State<HeatmapExamplePage> {
                         const Text('Use Log Normalization (Better for mixed intensities)'),
                       ],
                     ),
-                    const SizedBox(height: 16),
-
-                    // Clustering Controls
-                    const Text('Clustering Controls', style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
-                    const SizedBox(height: 8),
-                    
-                    // Enable Clustering Toggle
-                    Row(
-                      children: [
-                        Checkbox(
-                          value: enableClustering,
-                          onChanged: (value) {
-                            setState(() {
-                              enableClustering = value ?? true;
-                            });
-                          },
-                        ),
-                        const Text('Enable Point Clustering (Performance optimization)'),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Clustering Threshold Control
-                    const Text('Clustering Threshold', style: TextStyle(fontWeight: FontWeight.w500)),
-                    Slider(
-                      value: clusteringThreshold,
-                      min: 0.001,
-                      max: 0.1,
-                      divisions: 99,
-                      label: clusteringThreshold.toStringAsFixed(3),
-                      onChanged: enableClustering ? (value) {
-                        setState(() {
-                          clusteringThreshold = value;
-                        });
-                      } : null,
-                    ),
-                    Text('Value: ${clusteringThreshold.toStringAsFixed(3)} (Distance for grouping points)'),
                     const SizedBox(height: 16),
 
                     // Zoom Controls

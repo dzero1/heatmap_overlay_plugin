@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:heatmap_overlay_plugin/heatmap_overlay_plugin.dart';
 
@@ -250,5 +251,5 @@ List<ClusteredPoint> _testGridClusterPoints(List<HeatmapPoint> points, double th
 double _testCalculateDistance(HeatmapPoint p1, HeatmapPoint p2) {
   final dx = p1.x - p2.x;
   final dy = p1.y - p2.y;
-  return (dx * dx + dy * dy).sqrt();
+  return sqrt(dx * dx + dy * dy);
 } 

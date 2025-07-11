@@ -1,8 +1,12 @@
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:heatmap_overlay_plugin/utils.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 class HeatmapPoint {
   final double x;
@@ -30,11 +34,10 @@ class HeatmapOverlay extends StatefulWidget {
   final double gamma;
   final double minVisibility;
   final bool useLogNormalization;
-  final double clusteringThreshold; // Distance threshold for clustering (0.0 to 1.0)
-  final bool enableClustering; // Whether to enable point clustering
+  final double resolution; // Grid resolution for heatmap quality (lower = higher quality)
 
   const HeatmapOverlay({
-    Key? key,
+    super.key,
     required this.imageProvider,
     required this.points,
     this.blurRadius = 50.0,
@@ -45,9 +48,8 @@ class HeatmapOverlay extends StatefulWidget {
     this.gamma = 0.5,
     this.minVisibility = 0.1,
     this.useLogNormalization = true,
-    this.clusteringThreshold = 0.02, // 2% of viewport size
-    this.enableClustering = true,
-  }) : super(key: key);
+    this.resolution = 4.0, // Default resolution (lower = higher quality)
+  });
 
   @override
   State<HeatmapOverlay> createState() => _HeatmapOverlayState();
@@ -58,6 +60,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   ui.Image? _heatmapImage;
   Timer? _debounceTimer;
   String? _lastHash;
+  Size? _lastSize;
 
   @override
   void initState() {
@@ -68,7 +71,15 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _image?.dispose();
+    _heatmapImage?.dispose();
     super.dispose();
+  }
+
+  // Add this method to safely replace heatmap images
+  void _replaceHeatmapImage(ui.Image newImage) {
+    _heatmapImage?.dispose();
+    _heatmapImage = newImage;
   }
 
   Future<void> _loadImage() async {
@@ -82,6 +93,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     stream.addListener(listener);
     final image = await completer.future;
     setState(() {
+      _image?.dispose();
       _image = image;
     });
     _generateHeatmap();
@@ -89,6 +101,13 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
 
   void _generateHeatmap([Size? currentSize]) {
     if (_image == null || widget.points.isEmpty) return;
+    
+    // Check if size has changed significantly
+    if (currentSize != null && _lastSize != null) {
+      final sizeDiff = (currentSize.width - _lastSize!.width).abs() + 
+                      (currentSize.height - _lastSize!.height).abs();
+      if (sizeDiff < 1.0) return; // Size hasn't changed significantly
+    }
     
     // Create a hash of current parameters to check if we need to regenerate
     final currentHash = _createParameterHash(currentSize);
@@ -100,8 +119,9 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       _generateHeatmapImage(currentSize).then((heatmapImage) {
         if (mounted) {
           setState(() {
-            _heatmapImage = heatmapImage;
+            _replaceHeatmapImage(heatmapImage);
             _lastHash = currentHash;
+            _lastSize = currentSize;
           });
         }
       });
@@ -112,395 +132,153 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     final points = widget.points.map((p) => '${p.x.toStringAsFixed(3)},${p.y.toStringAsFixed(3)}').join('|');
     final intensities = widget.points.map((p) => p.intensity.toString()).join(',');
     final sizeHash = currentSize != null ? '_${currentSize.width.toInt()}x${currentSize.height.toInt()}' : '';
-    return '${points}_${intensities}_${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}_${widget.clusteringThreshold}_${widget.enableClustering}$sizeHash';
-  }
-
-  /// Clusters nearby points into single islands based on distance threshold
-  List<ClusteredPoint> _clusterPoints(List<HeatmapPoint> points, double threshold) {
-    if (points.isEmpty) return [];
-    
-    // For small datasets, use simple clustering
-    if (points.length <= 100) {
-      return _simpleClusterPoints(points, threshold);
-    }
-    
-    // For large datasets, use grid-based clustering for better performance
-    return _gridClusterPoints(points, threshold);
+    return '${points}_${intensities}_${widget.blurRadius}_${widget.blurSigma}_${widget.gradient.name}_${widget.opacity}_${widget.gamma}_${widget.minVisibility}_${widget.useLogNormalization}_${widget.resolution}$sizeHash';
   }
   
-  /// Simple clustering algorithm for small datasets
-  List<ClusteredPoint> _simpleClusterPoints(List<HeatmapPoint> points, double threshold) {
-    final List<ClusteredPoint> clusters = [];
-    final List<bool> visited = List.filled(points.length, false);
-    
-    for (int i = 0; i < points.length; i++) {
-      if (visited[i]) continue;
-      
-      // Start a new cluster
-      final List<int> clusterIndices = [i];
-      visited[i] = true;
-      
-      // Find all points within threshold distance
-      bool foundNewPoint;
-      do {
-        foundNewPoint = false;
-        for (int j = 0; j < points.length; j++) {
-          if (visited[j]) continue;
-          
-          // Check if point j is within threshold of any point in current cluster
-          for (final clusterIndex in clusterIndices) {
-            final distance = _calculateDistance(points[j], points[clusterIndex]);
-            if (distance <= threshold) {
-              clusterIndices.add(j);
-              visited[j] = true;
-              foundNewPoint = true;
-              break;
-            }
-          }
-        }
-      } while (foundNewPoint);
-      
-      // Calculate cluster centroid and total intensity
-      double totalX = 0.0;
-      double totalY = 0.0;
-      double totalIntensity = 0.0;
-      
-      for (final index in clusterIndices) {
-        totalX += points[index].x;
-        totalY += points[index].y;
-        totalIntensity += points[index].intensity;
-      }
-      
-      final centroidX = totalX / clusterIndices.length;
-      final centroidY = totalY / clusterIndices.length;
-      
-      // Create clustered point with weighted intensity (can be adjusted based on cluster size)
-      final clusteredIntensity = totalIntensity * (1.0 + 0.1 * (clusterIndices.length - 1));
-      
-      clusters.add(ClusteredPoint(
-        centroidX,
-        centroidY,
-        clusteredIntensity,
-        clusterIndices.length,
-      ));
-    }
-    
-    return clusters;
-  }
-  
-  /// Grid-based clustering algorithm for large datasets (better performance)
-  List<ClusteredPoint> _gridClusterPoints(List<HeatmapPoint> points, double threshold) {
-    // Create a grid with cell size equal to threshold
-    final int gridSize = (1.0 / threshold).ceil();
-    final Map<String, List<int>> grid = {};
-    
-    // Assign points to grid cells
-    for (int i = 0; i < points.length; i++) {
-      final gridX = (points[i].x / threshold).floor();
-      final gridY = (points[i].y / threshold).floor();
-      final cellKey = '$gridX,$gridY';
-      
-      grid.putIfAbsent(cellKey, () => []).add(i);
-    }
-    
-    final List<ClusteredPoint> clusters = [];
-    final List<bool> visited = List.filled(points.length, false);
-    
-    // Process each grid cell
-    for (final cellPoints in grid.values) {
-      if (cellPoints.isEmpty) continue;
-      
-      // Find clusters within this cell and neighboring cells
-      final Set<String> processedCells = {};
-      
-      for (final pointIndex in cellPoints) {
-        if (visited[pointIndex]) continue;
-        
-        // Start a new cluster
-        final List<int> clusterIndices = [pointIndex];
-        visited[pointIndex] = true;
-        
-        // Find all points within threshold distance in this and neighboring cells
-        final int gridX = (points[pointIndex].x / threshold).floor();
-        final int gridY = (points[pointIndex].y / threshold).floor();
-        
-        // Check current cell and 8 neighboring cells
-        for (int dx = -1; dx <= 1; dx++) {
-          for (int dy = -1; dy <= 1; dy++) {
-            final neighborKey = '${gridX + dx},${gridY + dy}';
-            if (processedCells.contains(neighborKey)) continue;
-            processedCells.add(neighborKey);
-            
-            final neighborPoints = grid[neighborKey];
-            if (neighborPoints == null) continue;
-            
-            for (final neighborIndex in neighborPoints) {
-              if (visited[neighborIndex]) continue;
-              
-              // Check if point is within threshold of any point in current cluster
-              for (final clusterIndex in clusterIndices) {
-                final distance = _calculateDistance(points[neighborIndex], points[clusterIndex]);
-                if (distance <= threshold) {
-                  clusterIndices.add(neighborIndex);
-                  visited[neighborIndex] = true;
-                  break;
-                }
-              }
-            }
-          }
-        }
-        
-        // Calculate cluster centroid and total intensity
-        double totalX = 0.0;
-        double totalY = 0.0;
-        double totalIntensity = 0.0;
-        
-        for (final index in clusterIndices) {
-          totalX += points[index].x;
-          totalY += points[index].y;
-          totalIntensity += points[index].intensity;
-        }
-        
-        final centroidX = totalX / clusterIndices.length;
-        final centroidY = totalY / clusterIndices.length;
-        
-        // Create clustered point with weighted intensity
-        final clusteredIntensity = totalIntensity * (1.0 + 0.1 * (clusterIndices.length - 1));
-        
-        clusters.add(ClusteredPoint(
-          centroidX,
-          centroidY,
-          clusteredIntensity,
-          clusterIndices.length,
-        ));
-      }
-    }
-    
-    return clusters;
-  }
-  
-  /// Calculate Euclidean distance between two points (normalized coordinates)
-  double _calculateDistance(HeatmapPoint p1, HeatmapPoint p2) {
-    final dx = p1.x - p2.x;
-    final dy = p1.y - p2.y;
-    return math.sqrt(dx * dx + dy * dy);
-  }
-  
-  /// Get dynamic clustering threshold based on viewport scale
-  double _getDynamicClusteringThreshold(Size? currentSize) {
-    if (currentSize == null) return widget.clusteringThreshold;
-    
-    // Base threshold on viewport size - smaller viewports get more aggressive clustering
-    final viewportArea = currentSize.width * currentSize.height;
-    final baseArea = 800 * 600; // Reference viewport size
-    
-    // Adjust threshold based on viewport scale
-    final scaleFactor = math.sqrt(baseArea / viewportArea).clamp(0.5, 2.0);
-    final dynamicThreshold = widget.clusteringThreshold * scaleFactor;
-    
-    // Ensure minimum and maximum bounds
-    return dynamicThreshold.clamp(0.001, 0.2);
-  }
-
   Future<ui.Image> _generateHeatmapImage([Size? currentSize]) async {
     final width = currentSize?.width.toInt() ?? _image!.width;
     final height = currentSize?.height.toInt() ?? _image!.height;
     
-    // Use high grid resolution for smoothness
-    const double resolution = 4; // Finer grid for smooth blobs
+    final double resolution = widget.resolution;
     final int gridWidth = (width / resolution).round();
     final int gridHeight = (height / resolution).round();
     
-    // Debug: Print grid dimensions
-    print('Heatmap: Image size:  [32m${width}x${height} [0m, Grid size:  [32m${gridWidth}x$gridHeight [0m');
-    print('Heatmap: Resolution: $resolution, Cell size: ~${(width/gridWidth).round()}x${(height/gridHeight).round()} pixels');
-    print('Heatmap: Points count: ${widget.points.length}');
+    print('Heatmap: Image size: ${width}x${height}, Grid size: ${gridWidth}x$gridHeight');
+    print('Heatmap: Resolution: $resolution, Points count: ${widget.points.length}');
     
-    // Apply clustering if enabled with dynamic threshold adjustment
-    final dynamicThreshold = _getDynamicClusteringThreshold(currentSize);
-    final List<ClusteredPoint> clusteredPoints = widget.enableClustering 
-        ? _clusterPoints(widget.points, dynamicThreshold)
-        : widget.points.map((p) => ClusteredPoint(p.x, p.y, p.intensity, 1)).toList();
+    final List<ClusteredPoint> clusteredPoints = widget.points
+        .map((p) => ClusteredPoint(p.x, p.y, p.intensity, 1))
+        .toList();
     
-    print('Heatmap: Clustered points count: ${clusteredPoints.length}');
-    if (widget.enableClustering) {
-      print('Heatmap: Dynamic clustering threshold: ${dynamicThreshold.toStringAsFixed(4)} (base: ${widget.clusteringThreshold.toStringAsFixed(4)})');
-    }
+    // Use flat array instead of nested lists
+    final densityArray = Float32List(gridWidth * gridHeight);
     
-    // 1. Create density array at high resolution
-    final densityArray = List.generate(
-      gridHeight,
-      (y) => List<double>.filled(gridWidth, 0.0),
-    );
-    
-    // 2. For each clustered point, stamp a Gaussian kernel onto the density array (optimized)
+    // Optimized kernel stamping
     final kernelSigma = widget.blurSigma > 0 ? widget.blurSigma : 8.0;
     final kernelRadius = widget.blurRadius > 0 ? widget.blurRadius : 20.0;
     final int maxKernelSize = 101;
     final kernelSize = math.min((kernelRadius * 2 + 1).round(), maxKernelSize);
-    final kernel = _createGaussianKernel(kernelSize, kernelSigma);
-    final halfKernel = kernelSize ~/ 2;
-    // Precompute mask for negligible kernel values
-    final double kernelThreshold = 0.00001;
-    final List<List<bool>> kernelMask = List.generate(
-      kernelSize,
-      (y) => List.generate(kernelSize, (x) => kernel[y][x] >= kernelThreshold),
-    );
     
+    final kernel = KernelCache.getFlatKernel(kernelSize, kernelSigma, kernelRadius);
+    final kernelMask = KernelCache.getKernelMask(kernelSize, kernelSigma, kernelRadius, 0.00001);
+    final halfKernel = kernelSize ~/ 2;
+    
+    // Optimized kernel application
     for (final point in clusteredPoints) {
       final normalizedX = point.x.clamp(0.0, 1.0);
       final normalizedY = point.y.clamp(0.0, 1.0);
       final gridX = (normalizedX * (gridWidth - 1)).round();
       final gridY = (normalizedY * (gridHeight - 1)).round();
-      // Early bounds check: skip if kernel is fully outside grid
+      
+      // Bounds check
       if (gridX + halfKernel < 0 || gridX - halfKernel >= gridWidth ||
           gridY + halfKernel < 0 || gridY - halfKernel >= gridHeight) {
         continue;
       }
-      for (int ky = 0; ky < kernelSize; ky++) {
-        for (int kx = 0; kx < kernelSize; kx++) {
-          if (!kernelMask[ky][kx]) continue; // skip negligible values
-          final sy = gridY + ky - halfKernel;
-          final sx = gridX + kx - halfKernel;
-          if (sy >= 0 && sy < gridHeight && sx >= 0 && sx < gridWidth) {
-            densityArray[sy][sx] += kernel[ky][kx] * point.intensity;
+      
+      // Optimized stamping with flat array
+      final startY = math.max(0, gridY - halfKernel);
+      final endY = math.min(gridHeight, gridY + halfKernel + 1);
+      final startX = math.max(0, gridX - halfKernel);
+      final endX = math.min(gridWidth, gridX + halfKernel + 1);
+      
+      for (int y = startY; y < endY; y++) {
+        final kyOffset = (y - gridY + halfKernel) * kernelSize;
+        final densityOffset = y * gridWidth;
+        
+        for (int x = startX; x < endX; x++) {
+          final kIndex = kyOffset + (x - gridX + halfKernel);
+          final dIndex = densityOffset + x;
+          
+          if (kIndex >= 0 && kIndex < kernel.length && 
+              kernelMask[kIndex ~/ kernelSize][kIndex % kernelSize]) {
+            densityArray[dIndex] += kernel[kIndex] * point.intensity;
           }
         }
       }
     }
     
-    // 3. Normalize array
-    final maxValue = _findMaxValue(densityArray);
-    final normalizedArray = _normalizeArray(densityArray, maxValue);
-    
-    // Debug: Print normalization info
-    print('Heatmap: Max value:  [32m${maxValue.toStringAsFixed(2)} [0m, Normalized max:  [32m${_findMaxValue(normalizedArray).toStringAsFixed(3)} [0m');
-    
-    // Ensure we always generate an image, even if max value is 0
-    if (maxValue <= 0.0 && widget.points.isNotEmpty) {
-      print('Heatmap: Warning - Max value is 0 but points exist. This might indicate an issue with coordinate conversion.');
-    }
-    
-    // 4. Convert to image with colormap - use full image size for output
-    return _arrayToImage(normalizedArray, gridWidth, gridHeight, width, height);
-  }
-
-  List<List<double>> _createGaussianKernel(int size, double sigma) {
-    final kernel = List.generate(
-      size,
-      (y) => List<double>.filled(size, 0.0),
-    );
-    
-    final center = size ~/ 2;
-    double sum = 0.0;
-    
-    for (int y = 0; y < size; y++) {
-      for (int x = 0; x < size; x++) {
-        final dx = x - center;
-        final dy = y - center;
-        final distance = math.sqrt(dx * dx + dy * dy);
-        final value = math.exp(-(distance * distance) / (2 * sigma * sigma));
-        kernel[y][x] = value;
-        sum += value;
-      }
-    }
-    
-    // Normalize kernel
-    for (int y = 0; y < size; y++) {
-      for (int x = 0; x < size; x++) {
-        kernel[y][x] /= sum;
-      }
-    }
-    
-    return kernel;
-  }
-
-  double _findMaxValue(List<List<double>> array) {
+    // Find max value efficiently
     double maxValue = 0.0;
-    for (final row in array) {
-      for (final value in row) {
-        if (value > maxValue) maxValue = value;
-      }
+    for (int i = 0; i < densityArray.length; i++) {
+      if (densityArray[i] > maxValue) maxValue = densityArray[i];
     }
-    return maxValue;
+    
+    // Normalize array in place
+    _normalizeFlatArray(densityArray, maxValue);
+    
+    print('Heatmap: Max value: ${maxValue.toStringAsFixed(2)}');
+    
+    return _flatArrayToImage(densityArray, gridWidth, gridHeight, width, height);
   }
 
-  List<List<double>> _normalizeArray(List<List<double>> array, double maxValue) {
-    if (maxValue <= 0.0) return array;
+  void _normalizeFlatArray(Float32List array, double maxValue) {
+    if (maxValue <= 0.0) return;
     
-    // Find minimum non-zero value for better dynamic range
+    // Find minimum non-zero value
     double minNonZeroValue = maxValue;
-    for (final row in array) {
-      for (final value in row) {
-        if (value > 0.0 && value < minNonZeroValue) {
-          minNonZeroValue = value;
-        }
+    for (int i = 0; i < array.length; i++) {
+      final value = array[i];
+      if (value > 0.0 && value < minNonZeroValue) {
+        minNonZeroValue = value;
       }
     }
     
-    return array.map((row) {
-      return row.map((value) {
-        if (value <= 0.0) return 0.0;
-        
-        double normalized;
-        
-        if (widget.useLogNormalization) {
-          // Use logarithmic normalization for better dynamic range
-          final logMax = math.log(maxValue + 1.0);
-          final logMin = math.log(minNonZeroValue + 1.0);
-          final logRange = logMax - logMin;
-          
-          final logValue = math.log(value + 1.0);
-          normalized = (logValue - logMin) / logRange;
-        } else {
-          // Linear normalization
-          normalized = value / maxValue;
-        }
-        
-        // Apply gamma correction to enhance low values (gamma < 1 makes low values brighter)
-        final gammaCorrected = math.pow(normalized, widget.gamma).toDouble();
-        
-        // Ensure minimum visibility for any non-zero value
-        return math.max(gammaCorrected, widget.minVisibility);
-      }).toList();
-    }).toList();
+    // Normalize in place
+    for (int i = 0; i < array.length; i++) {
+      final value = array[i];
+      if (value <= 0.0) continue;
+      
+      double normalized;
+      if (widget.useLogNormalization) {
+        final logMax = math.log(maxValue + 1.0);
+        final logMin = math.log(minNonZeroValue + 1.0);
+        final logRange = logMax - logMin;
+        final logValue = math.log(value + 1.0);
+        normalized = (logValue - logMin) / logRange;
+      } else {
+        normalized = value / maxValue;
+      }
+      
+      final gammaCorrected = math.pow(normalized, widget.gamma).toDouble();
+      array[i] = math.max(gammaCorrected, widget.minVisibility);
+    }
   }
 
-  Future<ui.Image> _arrayToImage(List<List<double>> array, int gridWidth, int gridHeight, int targetWidth, int targetHeight) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
+  Future<ui.Image> _flatArrayToImage(Float32List array, int gridWidth, int gridHeight, int targetWidth, int targetHeight) async {
+    final bytes = Uint8List(targetWidth * targetHeight * 4);
     
-    // Calculate cell dimensions to fill the entire target image
-    final cellWidth = targetWidth / gridWidth;
-    final cellHeight = targetHeight / gridHeight;
+    final scaleX = gridWidth / targetWidth;
+    final scaleY = gridHeight / targetHeight;
     
-    // Find the maximum density to ensure we draw something
-    final maxDensity = _findMaxValue(array);
-    final minVisibleDensity = maxDensity > 0 ? maxDensity * 0.01 : 0.001; // Show even very low values
+    // Find max for visibility threshold
+    double maxDensity = 0.0;
+    for (int i = 0; i < array.length; i++) {
+      if (array[i] > maxDensity) maxDensity = array[i];
+    }
+    final minVisibleDensity = maxDensity > 0 ? maxDensity * 0.01 : 0.001;
     
-    for (int y = 0; y < gridHeight; y++) {
-      for (int x = 0; x < gridWidth; x++) {
-        final density = array[y][x];
+    for (int y = 0; y < targetHeight; y++) {
+      for (int x = 0; x < targetWidth; x++) {
+        final gridX = (x * scaleX).floor().clamp(0, gridWidth - 1);
+        final gridY = (y * scaleY).floor().clamp(0, gridHeight - 1);
+        
+        final density = array[gridY * gridWidth + gridX];
+        final index = (y * targetWidth + x) * 4;
+        
         if (density > minVisibleDensity) {
           final color = _getColorFromDensity(density);
-          final paint = Paint()..color = color;
-          
-          // Draw cell at the correct position to fill the entire image
-          canvas.drawRect(
-            Rect.fromLTWH(
-              x * cellWidth,
-              y * cellHeight,
-              cellWidth,
-              cellHeight,
-            ),
-            paint,
-          );
+          bytes[index] = color.red;
+          bytes[index + 1] = color.green;
+          bytes[index + 2] = color.blue;
+          bytes[index + 3] = color.alpha;
         }
       }
     }
     
-    final picture = recorder.endRecording();
-    return await picture.toImage(targetWidth, targetHeight);
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(bytes, targetWidth, targetHeight, ui.PixelFormat.rgba8888, completer.complete);
+    return completer.future;
   }
 
   Color _getColorFromDensity(double density) {
@@ -546,7 +324,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       final s = (t - 0.75) / 0.25;
       return Color.fromARGB(
         (255 * widget.opacity).round(),
-        180,
+        255,
         (255 * (1 - s)).round(),
         0,
       );
@@ -625,12 +403,16 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
       builder: (context, constraints) {
         final currentSize = Size(constraints.maxWidth, constraints.maxHeight);
         
-        // Regenerate heatmap if size changes
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _image != null) {
-            _generateHeatmap(currentSize);
-          }
-        });
+        // Generate heatmap on first build or size change
+        if (_heatmapImage == null || _lastSize == null || 
+            (currentSize.width - _lastSize!.width).abs() > 1.0 ||
+            (currentSize.height - _lastSize!.height).abs() > 1.0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _image != null) {
+              _generateHeatmap(currentSize);
+            }
+          });
+        }
         
         return SizedBox(
           width: currentSize.width,
@@ -681,8 +463,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
         oldWidget.gamma != widget.gamma ||
         oldWidget.minVisibility != widget.minVisibility ||
         oldWidget.useLogNormalization != widget.useLogNormalization ||
-        oldWidget.clusteringThreshold != widget.clusteringThreshold ||
-        oldWidget.enableClustering != widget.enableClustering) {
+        oldWidget.resolution != widget.resolution) {
       _generateHeatmap();
     }
   }
