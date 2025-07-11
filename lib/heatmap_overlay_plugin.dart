@@ -8,6 +8,32 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+class HeatmapConstants {
+  static const double defaultKernelSigma = 8.0;
+  static const double defaultKernelRadius = 20.0;
+  static const int maxKernelSize = 101;
+  static const double kernelThreshold = 0.00001;
+  static const double minVisibleDensityRatio = 0.01;
+  static const double minVisibleDensityFallback = 0.001;
+  static const int colorLutSize = 256;
+  static const Duration debounceDelay = Duration(milliseconds: 100);
+  static const double sizeChangeThreshold = 1.0;
+  
+  // Colormap constants
+  static const double jetQuarter = 0.25;
+  static const double jetHalf = 0.5;
+  static const double jetThreeQuarters = 0.75;
+  static const double hotThird = 0.33;
+  static const double hotTwoThirds = 0.66;
+  static const double viridisHalf = 0.5;
+  
+  // Pre-calculated multipliers
+  static const double jetScale = 4.0;
+  static const double hotScale1 = 3.030303; // 1/0.33
+  static const double hotScale2 = 2.941176; // 1/0.34
+  static const double viridisScale = 2.0;
+}
+
 class HeatmapPoint {
   final double x;
   final double y;
@@ -98,7 +124,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     if (currentSize != null && _lastSize != null) {
       final sizeDiff = (currentSize.width - _lastSize!.width).abs() + 
                       (currentSize.height - _lastSize!.height).abs();
-      if (sizeDiff < 1.0) return; // Size hasn't changed significantly
+      if (sizeDiff < HeatmapConstants.sizeChangeThreshold) return; // Size hasn't changed significantly
     }
     
     // Create a hash of current parameters to check if we need to regenerate
@@ -107,7 +133,7 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     
     // Debounce rapid changes
     _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 100), () {
+    _debounceTimer = Timer(HeatmapConstants.debounceDelay, () {
       _generateHeatmapImage(currentSize).then((heatmapImage) {
         if (mounted) {
           setState(() {
@@ -144,13 +170,12 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     final densityArray = Float32List(gridWidth * gridHeight);
     
     // Optimized kernel stamping
-    final kernelSigma = widget.blurSigma > 0 ? widget.blurSigma : 8.0;
-    final kernelRadius = widget.blurRadius > 0 ? widget.blurRadius : 20.0;
-    final int maxKernelSize = 101;
-    final kernelSize = math.min((kernelRadius * 2 + 1).round(), maxKernelSize);
+    final kernelSigma = widget.blurSigma > 0 ? widget.blurSigma : HeatmapConstants.defaultKernelSigma;
+    final kernelRadius = widget.blurRadius > 0 ? widget.blurRadius : HeatmapConstants.defaultKernelRadius;
+    final kernelSize = math.min((kernelRadius * 2 + 1).round(), HeatmapConstants.maxKernelSize);
     
     final kernel = KernelCache.getFlatKernel(kernelSize, kernelSigma, kernelRadius);
-    final kernelMask = KernelCache.getKernelMask(kernelSize, kernelSigma, kernelRadius, 0.00001);
+    final kernelMask = KernelCache.getKernelMask(kernelSize, kernelSigma, kernelRadius, HeatmapConstants.kernelThreshold);
     final halfKernel = kernelSize ~/ 2;
     
     // Optimized kernel application
@@ -247,10 +272,11 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
     for (int i = 0; i < array.length; i++) {
       if (array[i] > maxDensity) maxDensity = array[i];
     }
-    final minVisibleDensity = maxDensity > 0 ? maxDensity * 0.01 : 0.001;
+    final minVisibleDensity = maxDensity > 0 ? maxDensity * HeatmapConstants.minVisibleDensityRatio : 
+    HeatmapConstants.minVisibleDensityFallback;
     
     // Pre-compute color lookup table for better performance
-    final colorLUT = _buildColorLUT(256);
+    final colorLUT = _buildColorLUT(HeatmapConstants.colorLutSize);
     
     // Direct pixel manipulation with optimized loops
     int byteIndex = 0;
@@ -305,55 +331,50 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
   }
 
   Color _jetColormap(double t) {
-    final alpha = (255 * widget.opacity).round();
-    
-    if (t < 0.25) {
-      final s = t * 4.0; // Avoid division
-      return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
-    } else if (t < 0.5) {
-      final s = (t - 0.25) * 4.0;
-      return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
-    } else if (t < 0.75) {
-      final s = (t - 0.5) * 4.0;
-      return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
-    } else {
-      final s = (t - 0.75) * 4.0;
-      return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
-    }
+  final alpha = (255 * widget.opacity).round();
+  
+  if (t < HeatmapConstants.jetQuarter) {
+    final s = t * HeatmapConstants.jetScale;
+    return Color.fromARGB(alpha, 0, 0, (127 + 128 * s).round());
+  } else if (t < HeatmapConstants.jetHalf) {
+    final s = (t - HeatmapConstants.jetQuarter) * HeatmapConstants.jetScale;
+    return Color.fromARGB(alpha, 0, (255 * s).round(), 255);
+  } else if (t < HeatmapConstants.jetThreeQuarters) {
+    final s = (t - HeatmapConstants.jetHalf) * HeatmapConstants.jetScale;
+    return Color.fromARGB(alpha, (255 * s).round(), 255, (255 * (1 - s)).round());
+  } else {
+    final s = (t - HeatmapConstants.jetThreeQuarters) * HeatmapConstants.jetScale;
+    return Color.fromARGB(alpha, 255, (255 * (1 - s)).round(), 0);
   }
+}
 
   Color _hotColormap(double t) {
     final alpha = (255 * widget.opacity).round();
     
-    if (t < 0.33) {
-      final s = t * 3.030303; // Pre-calculated 1/0.33
+    if (t < HeatmapConstants.hotThird) {
+      final s = t * HeatmapConstants.hotScale1;
       return Color.fromARGB(alpha, (255 * s).round(), 0, 0);
-    } else if (t < 0.66) {
-      final s = (t - 0.33) * 3.030303;
+    } else if (t < HeatmapConstants.hotTwoThirds) {
+      final s = (t - HeatmapConstants.hotThird) * HeatmapConstants.hotScale1;
       return Color.fromARGB(alpha, 255, (255 * s).round(), 0);
     } else {
-      final s = (t - 0.66) * 2.941176; // Pre-calculated 1/0.34
+      final s = (t - HeatmapConstants.hotTwoThirds) * HeatmapConstants.hotScale2;
       return Color.fromARGB(alpha, 255, 255, (255 * s).round());
     }
-  }
-
-  Color _coolColormap(double t) {
-    final alpha = (255 * widget.opacity).round();
-    return Color.fromARGB(alpha, (255 * t).round(), (255 * (1 - t)).round(), 255);
   }
 
   Color _viridisColormap(double t) {
     final alpha = (255 * widget.opacity).round();
     
-    if (t < 0.5) {
-      final s = t * 2.0; // Avoid division
+    if (t < HeatmapConstants.viridisHalf) {
+      final s = t * HeatmapConstants.viridisScale;
       return Color.fromARGB(alpha, 0, (100 + 155 * s).round(), (200 + 55 * s).round());
     } else {
-      final s = (t - 0.5) * 2.0;
+      final s = (t - HeatmapConstants.viridisHalf) * HeatmapConstants.viridisScale;
       return Color.fromARGB(alpha, (200 * s).round(), (255 - 100 * s).round(), (255 - 200 * s).round());
     }
   }
-  
+
   @override
   Widget build(BuildContext context) {
     if (_image == null) {
@@ -366,8 +387,8 @@ class _HeatmapOverlayState extends State<HeatmapOverlay> {
         
         // Generate heatmap on first build or size change
         if (_heatmapImage == null || _lastSize == null || 
-            (currentSize.width - _lastSize!.width).abs() > 1.0 ||
-            (currentSize.height - _lastSize!.height).abs() > 1.0) {
+            (currentSize.width - _lastSize!.width).abs() > HeatmapConstants.sizeChangeThreshold ||
+            (currentSize.height - _lastSize!.height).abs() > HeatmapConstants.sizeChangeThreshold) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _image != null) {
               _generateHeatmap(currentSize);
