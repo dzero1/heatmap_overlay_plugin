@@ -5,7 +5,7 @@ description: "Demonstrates how to use the heatmap_overlay_plugin plugin."
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 environment:
-  sdk: ^3.8.1
+  sdk: ^3.2.1
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -23,7 +23,11 @@ dependencies:
     # See https://dart.dev/tools/pub/dependencies#version-constraints
     # The example app is bundled with the plugin so we use a path dependency on
     # the parent directory to use the current plugin's version.
+    # git:
+      # https://github.com/dzero1/heatmap_overlay_plugin.git
     path: ../
+
+    
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
